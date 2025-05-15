@@ -38,11 +38,14 @@ public class JavacCompilerWrapper {
     }
 
     static void deleteDirectory(Path directoryToBeDeleted) throws IOException {
+        if (!Files.exists(directoryToBeDeleted)) {
+            return;
+        }
         try (Stream<Path> paths = Files.list(directoryToBeDeleted)) {
             paths.forEach(f -> {
                 try {
                     if (Files.isDirectory(f)) {
-                        deleteDirectory(directoryToBeDeleted);
+                        deleteDirectory(f);
                     }
 
                     Files.delete(f);
