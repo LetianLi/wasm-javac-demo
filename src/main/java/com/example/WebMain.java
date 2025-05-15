@@ -37,6 +37,7 @@ public class WebMain {
     public static final JSObject FILES = getElementById("files");
     public static final JSObject FILE_INPUTS = getElementById("file-inputs");
     public static final JSObject ADD_FILE_BUTTON = getElementById("add-file");
+    public static final JSObject JAVA_VERSION_SELECT = getElementById("java-version-select");
 
     public static void main(String[] args) {
         // Ensure file manager is initialized
@@ -161,6 +162,10 @@ public class WebMain {
     @JS("return obj.removeChild(child);")
     private static native JSObject removeChild(JSObject obj, JSObject child);
 
+    @JS.Coerce
+    @JS("return select.options[select.selectedIndex].value;")
+    private static native String getSelectOptionValue(JSObject select);
+
     public static void resetOutput() {
         setDisabled(false);
         OUTPUT.set("innerHTML", "");
@@ -238,66 +243,91 @@ public class WebMain {
         long start = System.nanoTime();
         JavacCompilerWrapper.Result r;
         try {
-            r = JavacCompilerWrapper.compileFiles(List.of("-Xlint:all", "-parameters"), 
-                sourceFiles.toArray(new FileContent[0]));
-        } catch (IOException e) {
+            List<String> options; 
+            if (getSelectOptionValue(JAVA_VERSION_SELECT).equals("11")) {
+                options = List.of("-Xlint:all", "-parameters", "--source", "11", "--target", "11");
+            } else {
+                options = List.of("-Xlint:all", "-parameters");
+            }
+            
+            FileContent[] fileArray = sourceFiles.toArray(new FileContent[0]);
+            r = JavacCompilerWrapper.compileFiles(options, fileArray);
+            System.err.println("Compilation completed successfully");
+        } catch (Throwable e) {
+            System.err.println("Compilation failed with: " + e.getClass().getName() + ": " + e.getMessage());
+            e.printStackTrace();
             throw new RuntimeException(e);
         }
         long nanos = System.nanoTime() - start;
         double millis = nanos / 1e6;
 
-        resetOutput();
+        try {
+            resetOutput();
 
-        if (r.success()) {
-            appendOutput("SUCCESS " + millis + "ms");
-        } else {
-            appendOutput("ERROR " + millis + "ms");
-        }
+            if (r.success()) {
+                appendOutput("SUCCESS " + millis + "ms");
+            } else {
+                appendOutput("ERROR " + millis + "ms");
+            }
 
-        appendOutput("");
-
-        // Highlight all source inputs
-        fileGroups = querySelectorAll(FILE_INPUTS, ".file-input-group");
-        length = ((JSNumber) fileGroups.get("length")).asInt();
-        for (int i = 0; i < length; i++) {
-            JSObject group = (JSObject) fileGroups.get(i);
-            JSObject sourceInput = querySelector(group, ".source-input");
-            String source = ((JSString) sourceInput.get("innerText")).asString();
+            appendOutput("");
             
-            Highlighter highlighter = new Highlighter(r.diagnostics());
-            source.chars().forEach(c -> highlighter.append((char) c));
-            String highlightedCode = highlighter.finish();
-            sourceInput.set("innerHTML", JSString.of(highlightedCode));
-        }
+            // Highlight all source inputs
+            fileGroups = querySelectorAll(FILE_INPUTS, ".file-input-group");
+            length = ((JSNumber) fileGroups.get("length")).asInt();
+            for (int i = 0; i < length; i++) {
+                JSObject group = (JSObject) fileGroups.get(i);
+                JSObject sourceInput = querySelector(group, ".source-input");
+                String source = ((JSString) sourceInput.get("innerText")).asString();
+                
+                Highlighter highlighter = new Highlighter(r.diagnostics());
+                source.chars().forEach(c -> highlighter.append((char) c));
+                String highlightedCode = highlighter.finish();
+                sourceInput.set("innerHTML", JSString.of(highlightedCode));
+            }
 
-        for (Diagnostic<? extends JavaFileObject> d : r.diagnostics()) {
-            appendOutput(d.toString());
-        }
+            for (Diagnostic<? extends JavaFileObject> d : r.diagnostics()) {
+                appendOutput(d.toString());
+            }
 
-        for (FileContent file : r.files()) {
-            appendFileDownload(file);
+            for (FileContent file : r.files()) {
+                appendFileDownload(file);
+            }
+        } catch (Throwable e) {
+            System.err.println("Error in post-compilation processing: " + e.getClass().getName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
+    // Sometimes, entering this function immediately crashes with a JavapTask type error.
+    // No clue why this happens, last time messing with the pom.xml fixed it.
     private static void disassemble(String className) {
-        JavapTask t = new JavapTask();
-        StringWriter stringWriter = new StringWriter();
-        t.setLog(stringWriter);
+        System.out.println("Starting disassembly1");
         try {
-            t.handleOptions(new String[]{"-cp", PreLoadedFiles.OUTPUT_PATH, "-l", "-s", "-c", "-p", className});
-        } catch (JavapTask.BadArgs e) {
-            throw new RuntimeException(e);
+            System.out.println("Starting disassembly2");
+            JavapTask t = new JavapTask();
+            System.err.println("JavapTask created");
+            StringWriter stringWriter = new StringWriter();
+            t.setLog(stringWriter);
+            try {
+                t.handleOptions(new String[]{"-cp", PreLoadedFiles.OUTPUT_PATH, "-l", "-s", "-c", "-p", className});
+            } catch (JavapTask.BadArgs e) {
+                throw new RuntimeException(e);
+            }
+
+            int exitCode = t.run();
+
+            String outputString = stringWriter.toString();
+
+            if (exitCode != 0) {
+                outputString = "javap exited with error code " + exitCode + ":\n\n" + outputString;
+            }
+
+            DISASSEMBLY.set("innerText", outputString);
+        } catch (Throwable e) {
+            System.err.println("Error in disassembly: " + e.getClass().getName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
-
-        int exitCode = t.run();
-
-        String outputString = stringWriter.toString();
-
-        if (exitCode != 0) {
-            outputString = "javap exited with error code " + exitCode + ":\n\n" + outputString;
-        }
-
-        DISASSEMBLY.set("innerText", outputString);
     }
 }
 

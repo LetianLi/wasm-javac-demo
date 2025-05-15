@@ -54,8 +54,8 @@
                 <configuration>
                     <compilerArgs>
                         <arg>-parameters</arg>
-                        <arg>--add-exports=jdk.jdeps/com.sun.tools.javap=ALL-UNNAMED</arg>
                         <arg>--add-modules=jdk.jdeps</arg>
+                        <arg>--add-exports=jdk.jdeps/com.sun.tools.javap=ALL-UNNAMED</arg>
                     </compilerArgs>
                 </configuration>
             </plugin>
