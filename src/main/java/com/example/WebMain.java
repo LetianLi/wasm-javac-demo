@@ -10,6 +10,7 @@ package com.example;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
@@ -22,17 +23,20 @@ import com.example.JavacCompilerWrapper.FileContent;
 import com.example.preload.PreLoadedFiles;
 import org.graalvm.webimage.api.JS;
 import org.graalvm.webimage.api.JSBoolean;
+import org.graalvm.webimage.api.JSNumber;
 import org.graalvm.webimage.api.JSObject;
 import org.graalvm.webimage.api.JSString;
 
 import com.sun.tools.javap.JavapTask;
 
 public class WebMain {
+    private static boolean isDisabled = true;
     public static final JSObject COMPILE_BUTTON = getElementById("compile");
     public static final JSObject OUTPUT = getElementById("diagnostics");
     public static final JSObject DISASSEMBLY = getElementById("disassembly");
     public static final JSObject FILES = getElementById("files");
-    public static final JSObject INPUT = getElementById("source");
+    public static final JSObject FILE_INPUTS = getElementById("file-inputs");
+    public static final JSObject ADD_FILE_BUTTON = getElementById("add-file");
 
     public static void main(String[] args) {
         // Ensure file manager is initialized
@@ -47,12 +51,7 @@ public class WebMain {
         }
 
         addEventListener(COMPILE_BUTTON, "click", e -> compileCallback());
-        addEventListener(INPUT, "keydown", e -> {
-            if (e.get("ctrlKey") instanceof JSBoolean b && b.asBoolean() && e.get("key") instanceof JSString jsString && "Enter".equals(jsString.asString())) {
-                ((JSObject) e.get("preventDefault")).call(e);
-                compileCallback();
-            }
-        });
+        addEventListener(ADD_FILE_BUTTON, "click", e -> addNewFileInput());
         setDisabled(false);
     }
 
@@ -65,6 +64,31 @@ public class WebMain {
                 setDisabled(false);
             }
         });
+    }
+
+    private static void addNewFileInput() {
+        JSObject div = createElement("div");
+        setAttribute(div, "class", "file-input-group");
+        
+        JSObject fileNameInput = createElement("input");
+        setAttribute(fileNameInput, "type", "text");
+        setAttribute(fileNameInput, "class", "filename-input");
+        setAttribute(fileNameInput, "placeholder", "Enter file name (e.g. MyClass.java)");
+        if (isDisabled) {
+            setAttribute(fileNameInput, "disabled", JSBoolean.of(true));
+        } else {
+            removeAttribute(fileNameInput, "disabled");
+        }
+     
+        JSObject pre = createElement("pre");
+        setAttribute(pre, "class", "source-input");
+        setAttribute(pre, "contenteditable", JSBoolean.of(!isDisabled));
+        setAttribute(pre, "spellcheck", "false");
+        pre.set("textContent", "\n");  // Empty content
+        
+        appendChild(div, fileNameInput);
+        appendChild(div, pre);
+        appendChild(FILE_INPUTS, div);
     }
 
     @JS("")
@@ -114,12 +138,24 @@ public class WebMain {
     public static native void setAttribute(JSObject elem, String attribute, Object value);
 
     @JS.Coerce
+    @JS("elem.removeAttribute(attribute);")
+    public static native void removeAttribute(JSObject elem, String attribute);
+
+    @JS.Coerce
     @JS("parent.appendChild(child);")
     public static native void appendChild(JSObject parent, JSObject child);
 
-    public static String getSource() {
-        return ((JSString) INPUT.get("innerText")).asString();
-    }
+    @JS.Coerce
+    @JS("return document.querySelector(selector);")
+    private static native JSObject querySelector(String selector);
+
+    @JS.Coerce
+    @JS("return Array.from(obj.querySelectorAll(selector));")
+    private static native JSObject querySelectorAll(JSObject obj, String selector);
+
+    @JS.Coerce
+    @JS("return obj.querySelector(selector);")
+    private static native JSObject querySelector(JSObject obj, String selector);
 
     public static void resetOutput() {
         setDisabled(false);
@@ -133,8 +169,22 @@ public class WebMain {
     }
 
     private static void setDisabled(boolean state) {
-        setAttribute(INPUT, "contenteditable", JSBoolean.of(!state));
+        isDisabled = state;
+        JSObject fileGroups = querySelectorAll(FILE_INPUTS, ".file-input-group");
+        int length = ((JSNumber) fileGroups.get("length")).asInt();
+        for (int i = 0; i < length; i++) {
+            JSObject group = (JSObject) fileGroups.get(i);
+            JSObject sourceInput = querySelector(group, ".source-input");
+            JSObject fileNameInput = querySelector(group, ".filename-input");
+            setAttribute(sourceInput, "contenteditable", JSBoolean.of(!state));
+            if (state) {
+                setAttribute(fileNameInput, "disabled", JSBoolean.of(true));
+            } else {
+                removeAttribute(fileNameInput, "disabled");
+            }
+        }
         COMPILE_BUTTON.set("disabled", JSBoolean.of(state));
+        ADD_FILE_BUTTON.set("disabled", JSBoolean.of(state));
     }
 
     private static void appendFileDownload(FileContent content) {
@@ -160,14 +210,26 @@ public class WebMain {
     }
 
     public static void compile() {
-        String fileName = "HelloWasm.java";
-        String source = getSource();
-        byte[] sourceBytes = source.getBytes(StandardCharsets.UTF_8);
+        List<FileContent> sourceFiles = new ArrayList<>();
+        JSObject fileGroups = querySelectorAll(FILE_INPUTS, ".file-input-group");
+        
+        int length = ((JSNumber) fileGroups.get("length")).asInt();
+        for (int i = 0; i < length; i++) {
+            JSObject group = (JSObject) fileGroups.get(i);
+            JSObject fileNameInput = querySelector(group, ".filename-input");
+            JSObject sourceInput = querySelector(group, ".source-input");
+            
+            String fileName = ((JSString) fileNameInput.get("value")).asString();
+            String source = ((JSString) sourceInput.get("innerText")).asString();
+            byte[] sourceBytes = source.getBytes(StandardCharsets.UTF_8);
+            sourceFiles.add(new FileContent(fileName, sourceBytes));
+        }
 
         long start = System.nanoTime();
         JavacCompilerWrapper.Result r;
         try {
-            r = JavacCompilerWrapper.compileFiles(List.of("-Xlint:all", "-parameters"), new FileContent[]{new FileContent(fileName, sourceBytes)});
+            r = JavacCompilerWrapper.compileFiles(List.of("-Xlint:all", "-parameters"), 
+                sourceFiles.toArray(new FileContent[0]));
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -184,10 +246,19 @@ public class WebMain {
 
         appendOutput("");
 
-        Highlighter highlighter = new Highlighter(r.diagnostics());
-        source.chars().forEach(c -> highlighter.append((char) c));
-        String highlightedCode = highlighter.finish();
-        INPUT.set("innerHTML", JSString.of(highlightedCode));
+        // Highlight all source inputs
+        fileGroups = querySelectorAll(FILE_INPUTS, ".file-input-group");
+        length = ((JSNumber) fileGroups.get("length")).asInt();
+        for (int i = 0; i < length; i++) {
+            JSObject group = (JSObject) fileGroups.get(i);
+            JSObject sourceInput = querySelector(group, ".source-input");
+            String source = ((JSString) sourceInput.get("innerText")).asString();
+            
+            Highlighter highlighter = new Highlighter(r.diagnostics());
+            source.chars().forEach(c -> highlighter.append((char) c));
+            String highlightedCode = highlighter.finish();
+            sourceInput.set("innerHTML", JSString.of(highlightedCode));
+        }
 
         for (Diagnostic<? extends JavaFileObject> d : r.diagnostics()) {
             appendOutput(d.toString());
