@@ -157,6 +157,10 @@ public class WebMain {
     @JS("return obj.querySelector(selector);")
     private static native JSObject querySelector(JSObject obj, String selector);
 
+    @JS.Coerce
+    @JS("return obj.removeChild(child);")
+    private static native JSObject removeChild(JSObject obj, JSObject child);
+
     public static void resetOutput() {
         setDisabled(false);
         OUTPUT.set("innerHTML", "");
@@ -214,13 +218,19 @@ public class WebMain {
         JSObject fileGroups = querySelectorAll(FILE_INPUTS, ".file-input-group");
         
         int length = ((JSNumber) fileGroups.get("length")).asInt();
-        for (int i = 0; i < length; i++) {
+        for (int i = length - 1; i >= 0; i--) {
             JSObject group = (JSObject) fileGroups.get(i);
             JSObject fileNameInput = querySelector(group, ".filename-input");
             JSObject sourceInput = querySelector(group, ".source-input");
             
-            String fileName = ((JSString) fileNameInput.get("value")).asString();
-            String source = ((JSString) sourceInput.get("innerText")).asString();
+            String fileName = ((JSString) fileNameInput.get("value")).asString().trim();
+            String source = ((JSString) sourceInput.get("innerText")).asString().trim();
+            
+            if (fileName.isEmpty() || source.isEmpty()) {
+                removeChild(FILE_INPUTS, group);
+                continue;
+            }
+            
             byte[] sourceBytes = source.getBytes(StandardCharsets.UTF_8);
             sourceFiles.add(new FileContent(fileName, sourceBytes));
         }
